@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 APP_NAME = "声文 · 视频转文字"
-APP_VERSION = "2.1"
+APP_VERSION = "4.0"
 
 # Visual system: warm light canvas, white cards, ink typography, and a single blue accent.
 BG = "#F3F6FB"
@@ -23,6 +23,113 @@ ACCENT_HOVER = "#274FCE"
 SUCCESS = "#14804A"
 DANGER = "#B42318"
 FONT = "Microsoft YaHei UI"
+
+# Whisper 多语言模型支持的语言代码（与上游 tokenizer 的 99 个语言代码保持一致）。
+LANGUAGE_OPTIONS = [
+    ("自动检测（逐段识别，适合混合语言）", None),
+    ('中文（普通话）', 'zh'),
+    ('粤语 / 地方汉语方言（自动检测并填写提示）', None),
+    ('英语', 'en'),
+    ('西班牙语', 'es'),
+    ('法语', 'fr'),
+    ('德语', 'de'),
+    ('日语', 'ja'),
+    ('韩语', 'ko'),
+    ('葡萄牙语', 'pt'),
+    ('俄语', 'ru'),
+    ('阿拉伯语', 'ar'),
+    ('印地语', 'hi'),
+    ('孟加拉语', 'bn'),
+    ('旁遮普语', 'pa'),
+    ('乌尔都语', 'ur'),
+    ('波斯语', 'fa'),
+    ('土耳其语', 'tr'),
+    ('意大利语', 'it'),
+    ('荷兰语', 'nl'),
+    ('波兰语', 'pl'),
+    ('乌克兰语', 'uk'),
+    ('越南语', 'vi'),
+    ('泰语', 'th'),
+    ('印度尼西亚语', 'id'),
+    ('马来语', 'ms'),
+    ('菲律宾语 / 他加禄语', 'tl'),
+    ('希伯来语', 'he'),
+    ('希腊语', 'el'),
+    ('捷克语', 'cs'),
+    ('瑞典语', 'sv'),
+    ('丹麦语', 'da'),
+    ('芬兰语', 'fi'),
+    ('挪威语', 'no'),
+    ('新挪威语（Nynorsk）', 'nn'),
+    ('法罗语', 'fo'),
+    ('罗马尼亚语', 'ro'),
+    ('匈牙利语', 'hu'),
+    ('保加利亚语', 'bg'),
+    ('克罗地亚语', 'hr'),
+    ('塞尔维亚语', 'sr'),
+    ('斯洛伐克语', 'sk'),
+    ('斯洛文尼亚语', 'sl'),
+    ('立陶宛语', 'lt'),
+    ('拉脱维亚语', 'lv'),
+    ('爱沙尼亚语', 'et'),
+    ('加泰罗尼亚语', 'ca'),
+    ('巴斯克语', 'eu'),
+    ('加利西亚语', 'gl'),
+    ('威尔士语', 'cy'),
+    ('冰岛语', 'is'),
+    ('卢森堡语', 'lb'),
+    ('马耳他语', 'mt'),
+    ('阿尔巴尼亚语', 'sq'),
+    ('亚美尼亚语', 'hy'),
+    ('格鲁吉亚语', 'ka'),
+    ('阿塞拜疆语', 'az'),
+    ('哈萨克语', 'kk'),
+    ('乌兹别克语', 'uz'),
+    ('蒙古语', 'mn'),
+    ('藏语', 'bo'),
+    ('缅甸语', 'my'),
+    ('高棉语', 'km'),
+    ('老挝语', 'lo'),
+    ('尼泊尔语', 'ne'),
+    ('僧伽罗语', 'si'),
+    ('泰米尔语', 'ta'),
+    ('泰卢固语', 'te'),
+    ('卡纳达语', 'kn'),
+    ('马拉雅拉姆语', 'ml'),
+    ('马拉地语', 'mr'),
+    ('古吉拉特语', 'gu'),
+    ('阿萨姆语', 'as'),
+    ('梵语', 'sa'),
+    ('信德语', 'sd'),
+    ('普什图语', 'ps'),
+    ('塔吉克语', 'tg'),
+    ('土库曼语', 'tk'),
+    ('鞑靼语', 'tt'),
+    ('巴什基尔语', 'ba'),
+    ('白俄罗斯语', 'be'),
+    ('波斯尼亚语', 'bs'),
+    ('马其顿语', 'mk'),
+    ('斯瓦希里语', 'sw'),
+    ('豪萨语', 'ha'),
+    ('约鲁巴语', 'yo'),
+    ('索马里语', 'so'),
+    ('阿姆哈拉语', 'am'),
+    ('南非荷兰语', 'af'),
+    ('修纳语', 'sn'),
+    ('林加拉语', 'ln'),
+    ('马达加斯加语', 'mg'),
+    ('毛利语', 'mi'),
+    ('夏威夷语', 'haw'),
+    ('爪哇语', 'jw'),
+    ('巽他语', 'su'),
+    ('拉丁语', 'la'),
+    ('布列塔尼语', 'br'),
+    ('奥克语', 'oc'),
+    ('意第绪语', 'yi'),
+    ('海地克里奥尔语', 'ht'),
+]
+LANGUAGE_CODE_BY_LABEL = {label: code for label, code in LANGUAGE_OPTIONS}
+LANGUAGE_NAME_BY_CODE = {code: label for label, code in LANGUAGE_OPTIONS if code}
 
 
 def resource_path(relative_path):
@@ -58,6 +165,9 @@ class SpeechTextApp:
         self.transcript_text = ""
         self.busy = False
         self.audio_duration = 0.0
+        self.review_report_rows = []
+        self.language_summary = ""
+        self.last_processing_options = {}
         self._style()
         self._build()
         self._center_window()
@@ -155,7 +265,7 @@ class SpeechTextApp:
         tk.Label(intro, text="把视频里的话，变成可编辑的文字", bg=BG, fg=INK, font=(FONT, 21, "bold")).pack(anchor="w")
         tk.Label(
             intro,
-            text="本机语音识别 · 实时进度 · 导出 TXT / SRT / MP3 / WAV · 生成带字幕视频",
+            text="多语言语音识别 · 口音提示 · 导出 TXT / SRT / MP3 / WAV · 生成带字幕视频",
             bg=BG, fg=MUTED, font=(FONT, 10)
         ).pack(anchor="w", pady=(5, 0))
 
@@ -188,13 +298,17 @@ class SpeechTextApp:
         left.pack_propagate(False)
         self._section_title(left, "02", "识别设置")
 
-        tk.Label(left, text="识别语言", bg=CARD, fg=INK, font=(FONT, 10)).pack(anchor="w")
-        self.lang_var = tk.StringVar(value="自动检测")
+        tk.Label(left, text="语音语言（支持多种国际语言）", bg=CARD, fg=INK, font=(FONT, 10)).pack(anchor="w")
+        self.lang_var = tk.StringVar(value=LANGUAGE_OPTIONS[0][0])
         self.lang_combo = ttk.Combobox(
             left, textvariable=self.lang_var, state="readonly", style="Modern.TCombobox",
-            values=["自动检测", "中文", "英语", "日语", "韩语", "法语", "德语", "西班牙语"],
+            values=[label for label, _code in LANGUAGE_OPTIONS],
         )
-        self.lang_combo.pack(fill="x", pady=(5, 13))
+        self.lang_combo.pack(fill="x", pady=(5, 6))
+        tk.Label(
+            left, text="自动语种检测按约 30 秒片段进行；混合语种更容易发现。方言/口音无法保证被准确分类，请在提示中注明，结果仍需复核。",
+            bg=CARD, fg=MUTED, font=(FONT, 9), justify="left", wraplength=390
+        ).pack(anchor="w", pady=(0, 10))
 
         tk.Label(left, text="识别模型", bg=CARD, fg=INK, font=(FONT, 10)).pack(anchor="w")
         self.model_var = tk.StringVar(value="medium（更准确）")
@@ -206,8 +320,27 @@ class SpeechTextApp:
         tk.Label(
             left, text="模型越大通常越准确，但更慢、占用更多内存，首次使用需下载模型。",
             bg=CARD, fg=MUTED, font=(FONT, 9), justify="left", wraplength=390
-        ).pack(anchor="w", pady=(0, 12))
+        ).pack(anchor="w", pady=(0, 7))
 
+        self.translate_en_var = tk.BooleanVar(value=False)
+        self.translate_en_check = tk.Checkbutton(
+            left, text="将语音翻译成英文（默认关闭，原语言转写）", variable=self.translate_en_var,
+            bg=CARD, fg=INK, activebackground=CARD, activeforeground=INK,
+            selectcolor="#EEF3FF", font=(FONT, 9), anchor="w", padx=0,
+        )
+        self.translate_en_check.pack(fill="x", pady=(0, 8))
+        tk.Label(
+            left, text="翻译准备：先保留原语种转写与时间轴；本地 Whisper 内置翻译只输出英文。其他目标语言需接入独立翻译引擎。",
+            bg=CARD, fg=MUTED, font=(FONT, 8), justify="left", wraplength=390
+        ).pack(anchor="w", pady=(0, 8))
+
+        self.enhance_var = tk.BooleanVar(value=True)
+        self.enhance_check = tk.Checkbutton(
+            left, text="基础人声清理（轻降噪 + 音量均衡，默认开启）", variable=self.enhance_var,
+            bg=CARD, fg=INK, activebackground=CARD, activeforeground=INK,
+            selectcolor="#EEF3FF", font=(FONT, 9), anchor="w", padx=0,
+        )
+        self.enhance_check.pack(fill="x", pady=(0, 5))
         self.vad_var = tk.BooleanVar(value=False)
         self.vad_check = tk.Checkbutton(
             left, text="跳过长静音（可能漏掉轻声，默认关闭）", variable=self.vad_var,
@@ -216,7 +349,9 @@ class SpeechTextApp:
         )
         self.vad_check.pack(fill="x", pady=(0, 12))
 
-        tk.Label(left, text="识别提示（可填写人名、专有名词）", bg=CARD, fg=INK, font=(FONT, 10)).pack(anchor="w")
+        prompt_header = tk.Frame(left, bg=CARD)
+        prompt_header.pack(fill="x")
+        tk.Label(prompt_header, text="口音 / 方言 / 专有词提示（选填，不代表自动方言分类）", bg=CARD, fg=INK, font=(FONT, 10)).pack(side="left", anchor="w")
         self.prompt_var = tk.StringVar()
         self.prompt_entry = tk.Entry(
             left, textvariable=self.prompt_var, relief="flat", bd=0, bg="#F7F9FC", fg=INK,
@@ -224,6 +359,10 @@ class SpeechTextApp:
             highlightbackground=BORDER, highlightcolor=ACCENT
         )
         self.prompt_entry.pack(fill="x", ipady=9, pady=(5, 12))
+        self.prompt_entry.insert(0, "例如：墨西哥西班牙语口音；粤语口语；术语/人名/地名")
+        self.prompt_entry.configure(fg="#8390A3")
+        self.prompt_entry.bind("<FocusIn>", self._clear_prompt_placeholder)
+        self.prompt_entry.bind("<FocusOut>", self._restore_prompt_placeholder)
 
         self.start_btn = self._button(left, "开始识别语音", self.start_processing, kind="primary")
         self.start_btn.pack(fill="x", pady=(0, 8))
@@ -276,15 +415,33 @@ class SpeechTextApp:
         tk.Label(status_row, textvariable=self.percent_var, bg=CARD, fg=ACCENT, font=(FONT, 9, "bold")).pack(side="right")
         self.progress = ttk.Progressbar(progress_area, mode="determinate", maximum=100, value=0, style="Modern.Horizontal.TProgressbar")
         self.progress.pack(fill="x")
+        self.review_btn = self._button(progress_area, "导出语言与质量校对表 CSV", self.export_review_report, kind="ghost", state="disabled")
+        self.review_btn.pack(anchor="e", pady=(8, 0))
         tk.Label(
-            outer, text="提示：准确率受录音质量、口音及背景音乐影响；可尝试更大模型或在识别提示中填写专有名词。",
+            outer, text="识别会标出不确定区域，但无法保证零错误；尤其是方言、口音、重叠说话和背景音乐，需要对照原视频复核。",
             bg=BG, fg=MUTED, font=(FONT, 9), anchor="w"
         ).pack(fill="x", pady=(12, 0))
+
+    def _clear_prompt_placeholder(self, event=None):
+        placeholder = "例如：墨西哥西班牙语口音；粤语口语；术语/人名/地名"
+        if self.prompt_var.get() == placeholder:
+            self.prompt_var.set("")
+            self.prompt_entry.configure(fg=INK)
+
+    def _restore_prompt_placeholder(self, event=None):
+        if not self.prompt_var.get().strip():
+            self.prompt_var.set("例如：墨西哥西班牙语口音；粤语口语；术语/人名/地名")
+            self.prompt_entry.configure(fg="#8390A3")
+
+    def _get_prompt_text(self):
+        value = self.prompt_var.get().strip()
+        placeholder = "例如：墨西哥西班牙语口音；粤语口语；术语/人名/地名"
+        return "" if value == placeholder else value
 
     def _show_placeholder(self):
         self.textbox.configure(state="normal")
         self.textbox.delete("1.0", "end")
-        self.textbox.insert("1.0", "识别文字会在这里实时显示。\n\n建议：\n• 普通视频优先选择「medium（更准确）」\n• 如果后半段漏字，保持「跳过长静音」关闭\n• 人名或专业词可以填写在「识别提示」中")
+        self.textbox.insert("1.0", "识别文字会在这里实时显示。\n\n处理流程：\n1. 音频预处理（可关闭）\n2. 按片段识别语种并转写\n3. 对低置信片段二次解码\n4. 标记疑似错词、语种不确定和长间隔\n\n方言/口音不保证自动识别正确，请导出校对表复核。")
         self.textbox.configure(fg="#8390A3")
 
     def _set_status(self, text, percent=None, color=None):
@@ -304,8 +461,12 @@ class SpeechTextApp:
         self.pick_btn.configure(state=state)
         self.lang_combo.configure(state="disabled" if busy else "readonly")
         self.model_combo.configure(state="disabled" if busy else "readonly")
+        self.translate_en_check.configure(state=state)
         self.prompt_entry.configure(state=state)
+        self.enhance_check.configure(state=state)
         self.vad_check.configure(state=state)
+        if hasattr(self, "review_btn"):
+            self.review_btn.configure(state="disabled" if busy or not self.review_report_rows else "normal")
         self.mp3_btn.configure(state="disabled" if busy or not self.video_path else "normal")
         self.wav_btn.configure(state="disabled" if busy or not self.video_path else "normal")
         has_text = bool(self.transcript_text)
@@ -335,6 +496,9 @@ class SpeechTextApp:
         self.transcript_segments = []
         self.transcript_text = ""
         self.audio_duration = 0.0
+        self.review_report_rows = []
+        self.language_summary = ""
+        self.review_btn.configure(state="disabled")
         self.textbox.configure(state="normal", fg="#8390A3")
         self._show_placeholder()
         for button in (self.copy_btn, self.srt_btn, self.txt_btn, self.subtitle_video_btn):
@@ -359,11 +523,13 @@ class SpeechTextApp:
             detail = (result.stderr or "").strip()[-1600:]
             raise RuntimeError(f"{task_label}失败。请确认视频包含可读取的音轨。\n\n{detail}")
 
-    def _make_asr_wav(self, output_path):
-        self._ffmpeg_run(
-            ["-i", self.video_path, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", output_path],
-            "音频准备"
-        )
+    def _make_asr_wav(self, output_path, enhance=True):
+        args = ["-i", self.video_path, "-vn", "-ac", "1", "-ar", "16000"]
+        if enhance:
+            # Light-weight speech-oriented filter chain. This cleans noise and evens loudness; it does not separate overlapping sources.
+            args += ["-af", "highpass=f=80,lowpass=f=9500,afftdn=nf=-22,dynaudnorm=f=150:g=12"]
+        args += ["-c:a", "pcm_s16le", output_path]
+        self._ffmpeg_run(args, "音频准备")
 
     def export_audio(self, audio_format):
         if self.busy or not self.video_path:
@@ -410,17 +576,25 @@ class SpeechTextApp:
             "medium（更准确）": "medium",
             "large-v3（高准确，较慢）": "large-v3",
         }
-        lang_map = {"中文": "zh", "英语": "en", "日语": "ja", "韩语": "ko", "法语": "fr", "德语": "de", "西班牙语": "es"}
+        selected_language = self.lang_var.get()
+        language_code = LANGUAGE_CODE_BY_LABEL.get(selected_language)
+        # A None language code means identify the language anew for each audio window.
         options = {
             "model": model_labels.get(self.model_var.get(), "medium"),
-            "language": lang_map.get(self.lang_var.get()),
-            "language_label": self.lang_var.get(),
+            "language": language_code,
+            "language_label": selected_language,
+            "task": "translate" if self.translate_en_var.get() else "transcribe",
             "vad_filter": bool(self.vad_var.get()),
-            "initial_prompt": self.prompt_var.get().strip(),
+            "enhance_audio": bool(self.enhance_var.get()),
+            "initial_prompt": self._get_prompt_text(),
         }
+        self.last_processing_options = dict(options)
         self.transcript_segments = []
         self.transcript_text = ""
         self.audio_duration = 0.0
+        self.review_report_rows = []
+        self.language_summary = ""
+        self.review_btn.configure(state="disabled")
         self._set_busy(True)
         self.txt_btn.configure(state="disabled")
         self.srt_btn.configure(state="disabled")
@@ -428,73 +602,247 @@ class SpeechTextApp:
         self.subtitle_video_btn.configure(state="disabled")
         self.textbox.configure(state="normal", fg=INK)
         self.textbox.delete("1.0", "end")
-        self.textbox.insert("1.0", "正在准备音频……\n")
+        self.textbox.insert("1.0", "第 1/4 步：正在整理音频……\n")
         self.textbox.see("end")
         self.progress.configure(value=0)
         self.percent_var.set("0%")
-        self._set_status("正在准备音频……", 0)
+        self._set_status("第 1/4 步：音频预处理……", 0)
         threading.Thread(target=self._process_worker, args=(options,), daemon=True).start()
+
+    @staticmethod
+    def _segment_quality_score(segments):
+        if not segments:
+            return -99.0
+        values = [float(getattr(seg, "avg_logprob", -1.5) or -1.5) for seg in segments]
+        return sum(values) / len(values)
+
+    @staticmethod
+    def _segment_needs_review(seg):
+        reasons = []
+        avg_logprob = float(getattr(seg, "avg_logprob", -1.5) or -1.5)
+        no_speech_prob = float(getattr(seg, "no_speech_prob", 0.0) or 0.0)
+        compression_ratio = float(getattr(seg, "compression_ratio", 0.0) or 0.0)
+        if avg_logprob < -0.8:
+            reasons.append("模型置信度偏低")
+        if no_speech_prob > 0.55:
+            reasons.append("疑似静音/背景声混入")
+        if compression_ratio > 2.4:
+            reasons.append("文本重复或解码异常风险")
+        return reasons
 
     def _process_worker(self, options):
         collected = []
-        detected_lang = ""
-        duration = 0.0
         temp_dir = None
+        duration = 0.0
         failure = None
+        language_chunks = []
+        review_events = []
         try:
-            self._set_status("正在提取并整理音频……", 2)
+            self._set_status("第 1/4 步：提取音频并进行基础清理……", 2)
             temp_dir = tempfile.mkdtemp(prefix="shengwen_asr_")
             wav_path = os.path.join(temp_dir, "audio_16k_mono.wav")
-            self._make_asr_wav(wav_path)
-            with wave.open(wav_path, "rb") as wf:
-                duration = wf.getnframes() / max(1, wf.getframerate())
+            self._make_asr_wav(wav_path, enhance=options["enhance_audio"])
+            with wave.open(wav_path, "rb") as source:
+                rate = source.getframerate()
+                total_frames = source.getnframes()
+                duration = total_frames / max(1, rate)
+                params = (source.getnchannels(), source.getsampwidth(), rate, source.getcomptype(), source.getcompname())
+                source_frames = total_frames
             self.audio_duration = duration
-            self._set_status("正在加载识别模型（首次使用可能需要下载）……", 4)
+            if duration <= 0:
+                raise RuntimeError("没有从视频中读取到有效音轨。")
+
+            self._set_status("第 2/4 步：加载多语言语音模型……", 4)
             from faster_whisper import WhisperModel
             model = WhisperModel(options["model"], device="cpu", compute_type="int8")
-            self._set_status(f"正在识别 · {options['model']} 模型 · 音频 {format_time(duration)}", 5)
 
-            transcribe_kwargs = dict(
-                language=options["language"],
-                beam_size=5,
-                best_of=5,
-                vad_filter=options["vad_filter"],
-                condition_on_previous_text=False,
-                word_timestamps=False,
-                no_speech_threshold=0.6,
-                log_prob_threshold=-1.0,
-                compression_ratio_threshold=2.4,
-            )
-            if options["initial_prompt"]:
-                transcribe_kwargs["initial_prompt"] = options["initial_prompt"]
-            if options["vad_filter"]:
-                # A longer silence threshold and speech padding help preserve quiet/short utterances.
-                transcribe_kwargs["vad_parameters"] = {
-                    "min_silence_duration_ms": 900,
-                    "speech_pad_ms": 400,
-                    "min_speech_duration_ms": 100,
-                }
-            segments, info = model.transcribe(wav_path, **transcribe_kwargs)
-            detected_lang = getattr(info, "language", "") or ""
-            # Iterate the whole lazy generator. Update both transcript and progress as segments arrive;
-            # keep any partial results available if decoding raises partway through a long file.
-            for seg in segments:
-                text = (seg.text or "").strip()
-                if not text:
-                    continue
-                item = {"start": float(seg.start), "end": float(seg.end), "text": text}
-                collected.append(item)
-                self.root.after(0, lambda item=item: self._append_segment(item))
-                pct = 5 + (min(99.0, max(0.0, item["end"] / duration * 94.0)) if duration else 70)
-                self._set_status(f"正在识别 · 已处理到 {format_time(item['end'])} / {format_time(duration)}", pct)
+            # Short overlapping windows allow language identification to be revisited across the whole video,
+            # rather than inheriting one language guess from the beginning of the file.
+            chunk_seconds = 30.0
+            overlap_seconds = 2.0
+            step_seconds = chunk_seconds - overlap_seconds
+            starts = [0.0]
+            while starts[-1] + chunk_seconds < duration:
+                starts.append(starts[-1] + step_seconds)
+            chunk_count = len(starts)
+            detected_seconds = {}
+            detected_probs = {}
+
+            with wave.open(wav_path, "rb") as source:
+                for chunk_index, chunk_start in enumerate(starts):
+                    chunk_end = min(duration, chunk_start + chunk_seconds)
+                    start_frame = min(total_frames, int(round(chunk_start * rate)))
+                    end_frame = min(total_frames, int(round(chunk_end * rate)))
+                    if end_frame <= start_frame:
+                        continue
+                    source.setpos(start_frame)
+                    frames = source.readframes(end_frame - start_frame)
+                    chunk_path = os.path.join(temp_dir, f"chunk_{chunk_index + 1:04d}.wav")
+                    with wave.open(chunk_path, "wb") as out_wav:
+                        out_wav.setnchannels(params[0])
+                        out_wav.setsampwidth(params[1])
+                        out_wav.setframerate(params[2])
+                        out_wav.setcomptype(params[3], params[4])
+                        out_wav.writeframes(frames)
+
+                    transcribe_kwargs = dict(
+                        language=options["language"],
+                        task=options["task"],
+                        beam_size=5,
+                        best_of=5,
+                        temperature=[0.0, 0.2, 0.4],
+                        vad_filter=options["vad_filter"],
+                        condition_on_previous_text=True,
+                        word_timestamps=False,
+                        no_speech_threshold=0.75,
+                        log_prob_threshold=-1.0,
+                        compression_ratio_threshold=2.4,
+                    )
+                    if options["initial_prompt"] and options["task"] == "transcribe":
+                        transcribe_kwargs["initial_prompt"] = options["initial_prompt"]
+                    if options["vad_filter"]:
+                        transcribe_kwargs["vad_parameters"] = {
+                            "min_silence_duration_ms": 900,
+                            "speech_pad_ms": 400,
+                            "min_speech_duration_ms": 100,
+                        }
+
+                    self._set_status(
+                        f"第 3/4 步：识别第 {chunk_index + 1}/{chunk_count} 段，并检测此段语种……",
+                        5 + 85 * chunk_index / max(1, chunk_count)
+                    )
+                    generated, info = model.transcribe(chunk_path, **transcribe_kwargs)
+                    decoded = list(generated)  # faster-whisper returns a lazy generator; exhaust it before assessing quality.
+                    language = getattr(info, "language", None) or options["language"] or "unknown"
+                    language_probability = float(getattr(info, "language_probability", 0.0) or 0.0)
+                    chosen = decoded
+                    base_score = self._segment_quality_score(decoded)
+                    uncertain_chunk = (not decoded) or any(self._segment_needs_review(seg) for seg in decoded) or (options["language"] is None and language_probability < 0.60)
+
+                    # Targeted second decoding for uncertain chunks. Keep the retry only if it scores better and does not collapse the transcript.
+                    if uncertain_chunk:
+                        retry_kwargs = dict(transcribe_kwargs)
+                        retry_kwargs["temperature"] = 0.2
+                        retry_kwargs["condition_on_previous_text"] = False
+                        retry_kwargs.pop("initial_prompt", None) if options["task"] == "translate" else None
+                        try:
+                            retry_gen, retry_info = model.transcribe(chunk_path, **retry_kwargs)
+                            retried = list(retry_gen)
+                            retry_score = self._segment_quality_score(retried)
+                            old_chars = sum(len((getattr(seg, "text", "") or "").strip()) for seg in decoded)
+                            new_chars = sum(len((getattr(seg, "text", "") or "").strip()) for seg in retried)
+                            if retried and (retry_score > base_score + 0.03) and new_chars >= max(1, int(old_chars * 0.85)):
+                                chosen = retried
+                                language = getattr(retry_info, "language", None) or language
+                                language_probability = float(getattr(retry_info, "language_probability", language_probability) or language_probability)
+                                review_events.append(f"{format_time(chunk_start)}：低置信片段已进行第二次解码；采用第二次结果。仍建议试听核对。")
+                            else:
+                                review_events.append(f"{format_time(chunk_start)}：二次解码未显著提高置信度，保留首轮结果并标记复核。")
+                        except Exception as retry_exc:
+                            review_events.append(f"{format_time(chunk_start)}：二次解码失败，保留首轮结果（{retry_exc}）。")
+
+                    chunk_len = max(0.0, chunk_end - chunk_start)
+                    detected_seconds[language] = detected_seconds.get(language, 0.0) + chunk_len
+                    detected_probs.setdefault(language, []).append(language_probability)
+                    language_chunks.append({
+                        "start": chunk_start,
+                        "end": chunk_end,
+                        "language": language,
+                        "language_probability": language_probability,
+                        "retried": uncertain_chunk,
+                    })
+
+                    # Remove overlap duplicates by accepting each window's segment centers only in its core region.
+                    core_start = 0.0 if chunk_index == 0 else chunk_start + overlap_seconds / 2.0
+                    core_end = duration if chunk_index == chunk_count - 1 else min(duration, chunk_start + chunk_seconds - overlap_seconds / 2.0)
+                    for seg in chosen:
+                        text = (getattr(seg, "text", "") or "").strip()
+                        if not text:
+                            continue
+                        local_start = float(seg.start)
+                        local_end = float(seg.end)
+                        center = chunk_start + (local_start + local_end) / 2.0
+                        if center < core_start or center >= core_end:
+                            continue
+                        reasons = self._segment_needs_review(seg)
+                        if options["language"] is None and language_probability < 0.60:
+                            reasons.append("本片段语种判定不确定")
+                        item = {
+                            "start": max(0.0, chunk_start + local_start),
+                            "end": min(duration, chunk_start + local_end),
+                            "text": text,
+                            "language": language,
+                            "language_probability": language_probability,
+                            "avg_logprob": float(getattr(seg, "avg_logprob", -1.5) or -1.5),
+                            "no_speech_prob": float(getattr(seg, "no_speech_prob", 0.0) or 0.0),
+                            "compression_ratio": float(getattr(seg, "compression_ratio", 0.0) or 0.0),
+                            "review_reasons": reasons,
+                        }
+                        collected.append(item)
+                        self.root.after(0, lambda item=item: self._append_segment(item))
+                    pct = 5 + 85 * (chunk_index + 1) / max(1, chunk_count)
+                    self._set_status(f"已识别 {chunk_index + 1}/{chunk_count} 段；正在扫描全片语言和疑似错误……", pct)
+
+            collected.sort(key=lambda item: (item["start"], item["end"]))
             if not collected:
-                raise RuntimeError("没有识别到语音。请检查视频是否有声音，或尝试更大的识别模型。")
+                raise RuntimeError("没有识别到语音。请检查视频音轨，或尝试更大的识别模型。")
+
+            # Generate a full-video review sheet: language by window, uncertain segments, and long intervals.
+            gap_events = []
+            previous_end = 0.0
+            for item in collected:
+                gap = item["start"] - previous_end
+                if gap >= 8.0:
+                    gap_events.append(f"{format_time(previous_end)}–{format_time(item['start'])}：有约 {gap:.1f} 秒没有字幕文字；可能是静音，也可能漏识别，请试听。")
+                previous_end = max(previous_end, item["end"])
+                item["review_flag"] = bool(item["review_reasons"])
+            tail_gap = max(0.0, duration - (collected[-1]["end"] if collected else 0.0))
+            if tail_gap >= max(6.0, duration * 0.08):
+                gap_events.append(f"视频结尾：最后一段文字结束于 {collected[-1]['end']:.1f} 秒，之后约 {tail_gap:.1f} 秒无字幕。可能是静音或漏识别，请试听。")
+
+            lang_parts = []
+            for code, seconds in sorted(detected_seconds.items(), key=lambda x: x[1], reverse=True):
+                name = LANGUAGE_NAME_BY_CODE.get(code, code if code != "unknown" else "未知语种")
+                probs = detected_probs.get(code, [])
+                avgp = sum(probs) / len(probs) if probs else 0.0
+                lang_parts.append(f"{name}（约 {seconds:.0f} 秒，平均检测概率 {avgp:.0%}）")
+            language_summary = "；".join(lang_parts) if lang_parts else "未能确定语种"
+            review_count = sum(1 for item in collected if item["review_flag"])
+            report_lines = [
+                "声文 · 全片语言与质量校对报告",
+                f"文件：{os.path.basename(self.video_path)}",
+                f"音频时长：{duration:.2f} 秒",
+                f"识别模型：{options['model']}",
+                f"识别模式：{'英文翻译输出（仅英文）' if options['task'] == 'translate' else '保留原语种转写'}",
+                f"音频预处理：{'开启' if options['enhance_audio'] else '关闭'}（基础滤波，不等于复杂人声分离）",
+                f"片段语种概览：{language_summary}",
+                f"疑似需复核的文字段数：{review_count}",
+                "重要说明：语种按约 30 秒音频窗口估计，短暂的代码切换、极少见语言和方言可能误判；概率不是准确率保证。",
+                "地方方言/口音不能由当前本地模型可靠地全面分类；请在识别提示中注明，并对照原视频复核。",
+                "",
+                "疑似需复核的字幕段：",
+            ]
+            for item in collected:
+                if item["review_flag"]:
+                    reason = "、".join(item["review_reasons"]) or "需人工确认"
+                    report_lines.append(f"[{item['start']:.2f}-{item['end']:.2f}] [{LANGUAGE_NAME_BY_CODE.get(item['language'], item['language'])}] {item['text']}  → {reason}")
+            if not any(item["review_flag"] for item in collected):
+                report_lines.append("模型置信指标没有触发明显复核标记；这不等于无错误。")
+            if gap_events:
+                report_lines.extend(["", "长间隔 / 结尾检查：", *gap_events])
+            else:
+                report_lines.extend(["", "没有发现超过 8 秒的无文字间隔；这不等于保证没有漏字。"])
+            report_lines.extend(["", "逐段记录在导出的 CSV 中；建议先检查低置信段，再进行翻译。"])
+            self.review_report_rows = collected
+            self.language_summary = language_summary
+            self.review_report_text = "\n".join(report_lines)
+            self._set_status("第 4/4 步：全片扫描与复核提示已完成。", 98)
         except Exception as exc:
             failure = str(exc)
         finally:
             if temp_dir:
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            self.root.after(0, lambda data=collected, lang=detected_lang, dur=duration, err=failure: self._finish_processing(data, lang, dur, err))
+            self.root.after(0, lambda data=collected, langs=getattr(self, "language_summary", ""), dur=duration, err=failure: self._finish_processing(data, langs, dur, err))
 
     def _append_segment(self, item):
         # Called only on the UI thread; stream results so users can see whether later speech is being processed.
@@ -505,13 +853,14 @@ class SpeechTextApp:
         self.textbox.insert("end", item["text"] + "\n")
         self.textbox.see("end")
 
-    def _finish_processing(self, segments, lang, duration, error):
+    def _finish_processing(self, segments, language_summary, duration, error):
         self.transcript_segments = segments
         self.transcript_text = "\n".join(item["text"] for item in segments)
+        self.audio_duration = duration
+        self.language_summary = language_summary or "未能确定语种"
         self._set_busy(False)
         if self.transcript_text:
             self.textbox.configure(state="normal", fg=INK)
-            # Rebuild from canonical collected list to guarantee result order and avoid any queue race.
             self.textbox.delete("1.0", "end")
             self.textbox.insert("1.0", self.transcript_text)
             self.textbox.see("1.0")
@@ -519,25 +868,67 @@ class SpeechTextApp:
             self.srt_btn.configure(state="normal")
             self.copy_btn.configure(state="normal")
             self.subtitle_video_btn.configure(state="normal" if self.transcript_segments else "disabled")
+            self.review_btn.configure(state="normal" if self.review_report_rows else "disabled")
             self.progress.configure(value=100 if not error else self.progress["value"])
             self.percent_var.set("100%" if not error else self.percent_var.get())
         else:
             self.textbox.configure(state="normal")
             self.textbox.delete("1.0", "end")
-            self.textbox.insert("1.0", "暂未识别到文字。\n\n可以尝试：\n• 选择 medium 或 large-v3 模型\n• 选择正确的语言，而不是自动检测\n• 检查视频中说话声音是否清晰")
+            self.textbox.insert("1.0", "暂未识别到文字。\n\n可以尝试：\n• 选择 medium 或 large-v3 模型\n• 指定最主要的语种\n• 在提示中注明方言、口音和专有词\n• 检查视频中人声是否被音乐覆盖")
             self.textbox.configure(fg="#8390A3")
         if error:
-            self._set_status("识别未完整完成；已保留当前已识别文字。", self.progress["value"], DANGER)
+            self._set_status("识别未完整完成；已保留当前识别到的部分文字。", self.progress["value"], DANGER)
             self.root.after(100, lambda e=error: messagebox.showerror("识别未完成", e + ("\n\n已保留识别到的部分文字，可以先导出。" if segments else "")))
-            if self.transcript_text:
-                self.txt_btn.configure(state="normal")
-                self.srt_btn.configure(state="normal")
-                self.copy_btn.configure(state="normal")
-                self.subtitle_video_btn.configure(state="normal" if self.transcript_segments else "disabled")
-        else:
-            language_names = {"zh": "中文", "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语", "es": "西班牙语"}
-            lang_text = language_names.get(lang, lang or "未知")
-            self._set_status(f"识别完成 · {lang_text} · {len(segments)} 段 · 音频 {format_time(duration)}", 100, SUCCESS)
+            return
+
+        low_conf = sum(1 for item in segments if item.get("review_flag"))
+        last_end = float(segments[-1]["end"]) if segments else 0.0
+        tail_gap = max(0.0, float(duration) - last_end)
+        task_text = "英文翻译输出" if self.translate_en_var.get() else "保留原语种转写"
+        status = f"完成 · {task_text} · 语种扫描：{self.language_summary} · {len(segments)} 段 · {low_conf} 段需复核"
+        if tail_gap >= max(6.0, duration * 0.08):
+            status += f" · 结尾 {tail_gap:.1f}s 无文字，请试听"
+        self._set_status(status, 100, "#B7791F" if low_conf or tail_gap >= max(6.0, duration * 0.08) else SUCCESS)
+        message = (
+            f"已完成整段视频识别与按片段语种扫描。\n\n"
+            f"语种估计：{self.language_summary}\n"
+            f"标记为疑似需复核：{low_conf} 段\n"
+            f"结尾无文字间隔：约 {tail_gap:.1f} 秒\n\n"
+            "请点击“导出语言与质量校对表 CSV”，先核对低置信段和长间隔，再用于翻译。\n"
+            "这些标记只能帮助发现风险，不能保证模型之外没有错字；方言和口音尤其需要人工听审。"
+        )
+        self.root.after(250, lambda msg=message: messagebox.showinfo("识别与校对提示完成", msg))
+
+    def export_review_report(self):
+        if not self.review_report_rows:
+            messagebox.showinfo("暂无校对数据", "请先完成一次识别。")
+            return
+        base = os.path.splitext(os.path.basename(self.video_path))[0] if self.video_path else "声文校对表"
+        path = filedialog.asksaveasfilename(
+            title="导出语言与质量校对表", defaultextension=".csv", initialfile=base + "_校对表.csv",
+            filetypes=[("CSV 表格", "*.csv")]
+        )
+        if not path:
+            return
+        try:
+            import csv
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["开始秒", "结束秒", "估计语种", "语种检测概率（窗口级）", "识别文字", "平均对数概率", "无语音概率", "是否需复核", "复核原因"])
+                for item in self.review_report_rows:
+                    writer.writerow([
+                        f"{item['start']:.2f}", f"{item['end']:.2f}",
+                        LANGUAGE_NAME_BY_CODE.get(item.get("language", ""), item.get("language", "未知")),
+                        f"{float(item.get('language_probability', 0.0)):.3f}", item["text"],
+                        f"{float(item.get('avg_logprob', 0.0)):.3f}",
+                        f"{float(item.get('no_speech_prob', 0.0)):.3f}",
+                        "是" if item.get("review_flag") else "否",
+                        "；".join(item.get("review_reasons", [])),
+                    ])
+            self._set_status(f"校对表已导出：{path}", color=SUCCESS)
+            messagebox.showinfo("导出完成", f"校对表已保存：\n{path}\n\n此表保留时间、语种估计和疑似错误标记，可在翻译前用于人工检查。")
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc))
 
     def _ensure_transcript(self):
         if not self.transcript_text:
