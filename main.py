@@ -5,12 +5,18 @@ import shutil
 import tempfile
 import threading
 import subprocess
+import json
+import html
+import time
+import urllib.parse
+import urllib.request
+import urllib.error
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 APP_NAME = "声文 · 视频转文字"
-APP_VERSION = "4.0"
+APP_VERSION = "5.0"
 
 # Visual system: warm light canvas, white cards, ink typography, and a single blue accent.
 BG = "#F3F6FB"
@@ -28,7 +34,7 @@ FONT = "Microsoft YaHei UI"
 LANGUAGE_OPTIONS = [
     ("自动检测（逐段识别，适合混合语言）", None),
     ('中文（普通话）', 'zh'),
-    ('粤语 / 地方汉语方言（自动检测并填写提示）', None),
+    ('粤语 / 地方汉语方言（自动检测，提示词辅助）', None),
     ('英语', 'en'),
     ('西班牙语', 'es'),
     ('法语', 'fr'),
@@ -131,6 +137,32 @@ LANGUAGE_OPTIONS = [
 LANGUAGE_CODE_BY_LABEL = {label: code for label, code in LANGUAGE_OPTIONS}
 LANGUAGE_NAME_BY_CODE = {code: label for label, code in LANGUAGE_OPTIONS if code}
 
+# MyMemory is used only when the user explicitly clicks Translate and accepts sending text online.
+# The provider may not support every source/target pair; the app reports failures rather than silently substituting text.
+TARGET_LANGUAGE_OPTIONS = [
+    ("简体中文", "zh-CN"), ("英语", "en"), ("日语", "ja"), ("韩语", "ko"),
+    ("西班牙语", "es"), ("法语", "fr"), ("德语", "de"), ("葡萄牙语", "pt-PT"),
+    ("俄语", "ru"), ("阿拉伯语", "ar"), ("印地语", "hi"), ("孟加拉语", "bn"),
+    ("乌尔都语", "ur"), ("波斯语", "fa"), ("土耳其语", "tr"), ("意大利语", "it"),
+    ("荷兰语", "nl"), ("波兰语", "pl"), ("乌克兰语", "uk"), ("越南语", "vi"),
+    ("泰语", "th"), ("印度尼西亚语", "id"), ("马来语", "ms"), ("菲律宾语", "tl"),
+    ("希伯来语", "he"), ("希腊语", "el"), ("捷克语", "cs"), ("瑞典语", "sv"),
+    ("丹麦语", "da"), ("芬兰语", "fi"), ("挪威语", "no"), ("罗马尼亚语", "ro"),
+    ("匈牙利语", "hu"), ("保加利亚语", "bg"), ("克罗地亚语", "hr"), ("塞尔维亚语", "sr"),
+    ("斯洛伐克语", "sk"), ("斯洛文尼亚语", "sl"), ("立陶宛语", "lt"), ("拉脱维亚语", "lv"),
+    ("爱沙尼亚语", "et"), ("加泰罗尼亚语", "ca"), ("威尔士语", "cy"), ("冰岛语", "is"),
+    ("阿尔巴尼亚语", "sq"), ("亚美尼亚语", "hy"), ("格鲁吉亚语", "ka"), ("阿塞拜疆语", "az"),
+    ("哈萨克语", "kk"), ("乌兹别克语", "uz"), ("蒙古语", "mn"), ("尼泊尔语", "ne"),
+    ("僧伽罗语", "si"), ("泰米尔语", "ta"), ("泰卢固语", "te"), ("卡纳达语", "kn"),
+    ("马拉雅拉姆语", "ml"), ("马拉地语", "mr"), ("古吉拉特语", "gu"), ("阿萨姆语", "as"),
+    ("普什图语", "ps"), ("塔吉克语", "tg"), ("土库曼语", "tk"), ("鞑靼语", "tt"),
+    ("白俄罗斯语", "be"), ("波斯尼亚语", "bs"), ("马其顿语", "mk"), ("斯瓦希里语", "sw"),
+    ("豪萨语", "ha"), ("约鲁巴语", "yo"), ("索马里语", "so"), ("阿姆哈拉语", "am"),
+    ("南非荷兰语", "af"), ("修纳语", "sn"), ("林加拉语", "ln"), ("马达加斯加语", "mg"),
+]
+TARGET_CODE_BY_LABEL = {label: code for label, code in TARGET_LANGUAGE_OPTIONS}
+LANGUAGE_CODE_ALIASES = {"zh": "zh-CN", "pt": "pt-PT", "tl": "tl", "jw": "jv", "haw": "haw"}
+
 
 def resource_path(relative_path):
     """Resolve a bundled or source-relative resource path."""
@@ -157,12 +189,19 @@ class SpeechTextApp:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("1180x820")
+        self.root.geometry("1240x900")
         self.root.minsize(1000, 720)
         self.root.configure(bg=BG)
         self.video_path = ""
-        self.transcript_segments = []
+        self.transcript_segments = []          # user-editable source subtitle rows
+        self.original_segments = []            # immutable snapshot of the first-pass ASR result
         self.transcript_text = ""
+        self.translation_segments = []
+        self.translation_complete = False
+        self.translation_target_code = ""
+        self.translation_target_label = ""
+        self.translation_privacy_accepted = False
+        self.subtitle_translation_var = tk.BooleanVar(value=True)
         self.busy = False
         self.audio_duration = 0.0
         self.review_report_rows = []
@@ -170,12 +209,13 @@ class SpeechTextApp:
         self.last_processing_options = {}
         self._style()
         self._build()
+        self._on_mode_change()
         self._center_window()
 
     def _center_window(self):
         self.root.update_idletasks()
-        width = min(1180, self.root.winfo_screenwidth() - 80)
-        height = min(820, self.root.winfo_screenheight() - 80)
+        width = min(1240, self.root.winfo_screenwidth() - 40)
+        height = min(900, self.root.winfo_screenheight() - 60)
         x = max(0, (self.root.winfo_screenwidth() - width) // 2)
         y = max(0, (self.root.winfo_screenheight() - height) // 2)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
@@ -285,6 +325,8 @@ class SpeechTextApp:
         self.file_hint.pack(fill="x", anchor="w", pady=(4, 0))
         self.pick_btn = self._button(source_row, "选择视频文件", self.pick_video, kind="secondary")
         self.pick_btn.pack(side="right")
+        self.start_btn = self._button(source_row, "开始识别语音", self.start_processing, kind="primary", state="disabled")
+        self.start_btn.pack(side="right", padx=(0, 8))
 
         # Body: settings/action column and transcript column
         body = tk.Frame(outer, bg=BG)
@@ -293,12 +335,32 @@ class SpeechTextApp:
         body.grid_columnconfigure(1, weight=6, uniform="body")
         body.grid_rowconfigure(0, weight=1)
 
-        _, left = self._card(body)
-        left.master.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        left.pack_propagate(False)
+        # Scrollable settings card: keeps the main action reachable on 720p laptops.
+        left_border = tk.Frame(body, bg=BORDER, bd=0, highlightthickness=0)
+        left_border.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        left_border.grid_rowconfigure(0, weight=1)
+        left_border.grid_columnconfigure(0, weight=1)
+        left_canvas = tk.Canvas(left_border, bg=CARD, highlightthickness=0, bd=0)
+        left_scrollbar = ttk.Scrollbar(left_border, orient="vertical", command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        left_canvas.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+        left_scrollbar.grid(row=0, column=1, sticky="ns", pady=1)
+        left = tk.Frame(left_canvas, bg=CARD, padx=18, pady=16)
+        left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
+        left.bind("<Configure>", lambda _event: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+        left_canvas.bind("<Configure>", lambda event: left_canvas.itemconfigure(left_window, width=event.width))
         self._section_title(left, "02", "识别设置")
 
-        tk.Label(left, text="语音语言（支持多种国际语言）", bg=CARD, fg=INK, font=(FONT, 10)).pack(anchor="w")
+        tk.Label(left, text="操作模式", bg=CARD, fg=INK, font=(FONT, 10)).pack(anchor="w")
+        self.mode_var = tk.StringVar(value="简单模式")
+        self.mode_combo = ttk.Combobox(
+            left, textvariable=self.mode_var, state="readonly", style="Modern.TCombobox",
+            values=["简单模式", "专业模式"],
+        )
+        self.mode_combo.pack(fill="x", pady=(5, 10))
+        self.mode_combo.bind("<<ComboboxSelected>>", self._on_mode_change)
+
+        tk.Label(left, text="语音语言（自动逐段检测；也可手动指定）", bg=CARD, fg=INK, font=(FONT, 10)).pack(anchor="w")
         self.lang_var = tk.StringVar(value=LANGUAGE_OPTIONS[0][0])
         self.lang_combo = ttk.Combobox(
             left, textvariable=self.lang_var, state="readonly", style="Modern.TCombobox",
@@ -306,7 +368,7 @@ class SpeechTextApp:
         )
         self.lang_combo.pack(fill="x", pady=(5, 6))
         tk.Label(
-            left, text="自动语种检测按约 30 秒片段进行；混合语种更容易发现。方言/口音无法保证被准确分类，请在提示中注明，结果仍需复核。",
+            left, text="自动语种检测按约 20 秒重叠片段进行，适合发现视频中的语种切换。方言/口音无法保证被准确分类，请在提示中注明，结果仍需复核。",
             bg=CARD, fg=MUTED, font=(FONT, 9), justify="left", wraplength=390
         ).pack(anchor="w", pady=(0, 10))
 
@@ -322,15 +384,17 @@ class SpeechTextApp:
             bg=CARD, fg=MUTED, font=(FONT, 9), justify="left", wraplength=390
         ).pack(anchor="w", pady=(0, 7))
 
-        self.translate_en_var = tk.BooleanVar(value=False)
-        self.translate_en_check = tk.Checkbutton(
-            left, text="将语音翻译成英文（默认关闭，原语言转写）", variable=self.translate_en_var,
-            bg=CARD, fg=INK, activebackground=CARD, activeforeground=INK,
-            selectcolor="#EEF3FF", font=(FONT, 9), anchor="w", padx=0,
+        tk.Label(left, text="译文目标语言（可选；先识别原文，再单独翻译）", bg=CARD, fg=INK, font=(FONT, 10)).pack(anchor="w")
+        self.translation_target_var = tk.StringVar(value="简体中文")
+        self.translation_target_combo = ttk.Combobox(
+            left, textvariable=self.translation_target_var, state="readonly", style="Modern.TCombobox",
+            values=[label for label, _code in TARGET_LANGUAGE_OPTIONS],
         )
-        self.translate_en_check.pack(fill="x", pady=(0, 8))
+        self.translation_target_combo.pack(fill="x", pady=(5, 6))
+        self.translate_btn = self._button(left, "生成译文（联网）", self.start_translation, kind="secondary", state="disabled")
+        self.translate_btn.pack(fill="x", pady=(0, 5))
         tk.Label(
-            left, text="翻译准备：先保留原语种转写与时间轴；本地 Whisper 内置翻译只输出英文。其他目标语言需接入独立翻译引擎。",
+            left, text="翻译会把字幕文字发送到 MyMemory 在线翻译服务（不上传视频/音频）。不同语种组合可能不受支持，并受服务可用性与额度限制；方言语义仍需人工核对。",
             bg=CARD, fg=MUTED, font=(FONT, 8), justify="left", wraplength=390
         ).pack(anchor="w", pady=(0, 8))
 
@@ -364,8 +428,6 @@ class SpeechTextApp:
         self.prompt_entry.bind("<FocusIn>", self._clear_prompt_placeholder)
         self.prompt_entry.bind("<FocusOut>", self._restore_prompt_placeholder)
 
-        self.start_btn = self._button(left, "开始识别语音", self.start_processing, kind="primary")
-        self.start_btn.pack(fill="x", pady=(0, 8))
         audio_row = tk.Frame(left, bg=CARD)
         audio_row.pack(fill="x")
         self.mp3_btn = self._button(audio_row, "导出 MP3", lambda: self.export_audio("mp3"), kind="secondary", state="disabled")
@@ -394,15 +456,56 @@ class SpeechTextApp:
         )
         self.subtitle_video_btn.pack(side="left")
 
+        self.translation_toolbar = tk.Frame(right, bg=CARD)
+        self.translation_toolbar.pack(fill="x", pady=(0, 8))
+        self.export_original_btn = self._button(self.translation_toolbar, "导出原始转写", self.export_original_txt, kind="ghost", state="disabled")
+        self.export_original_btn.pack(side="left", padx=(0, 6))
+        self.export_translated_srt_btn = self._button(self.translation_toolbar, "导出译文 SRT", self.export_translated_srt, kind="ghost", state="disabled")
+        self.export_translated_srt_btn.pack(side="left", padx=(0, 6))
+        self.export_translated_txt_btn = self._button(self.translation_toolbar, "导出译文 TXT", self.export_translated_txt, kind="ghost", state="disabled")
+        self.export_translated_txt_btn.pack(side="left", padx=(0, 8))
+        self.use_translation_check = tk.Checkbutton(
+            self.translation_toolbar, text="生成视频时使用译文字幕（有译文时）",
+            variable=self.subtitle_translation_var, bg=CARD, fg=INK, activebackground=CARD,
+            selectcolor="#EEF3FF", font=(FONT, 9), anchor="w", padx=0,
+        )
+        self.use_translation_check.pack(side="left", fill="x", expand=True)
+
         text_wrap = tk.Frame(right, bg=BORDER, padx=1, pady=1)
         text_wrap.pack(fill="both", expand=True)
+        # Reserve enough room for status/progress below the editor; otherwise a short screen can clip them.
+        text_wrap.configure(height=285)
+        text_wrap.pack_propagate(False)
+        self.text_tabs = ttk.Notebook(text_wrap)
+        self.text_tabs.pack(fill="both", expand=True)
+        editor_tab = tk.Frame(self.text_tabs, bg=CARD)
+        original_tab = tk.Frame(self.text_tabs, bg=CARD)
+        translation_tab = tk.Frame(self.text_tabs, bg=CARD)
+        self.text_tabs.add(editor_tab, text="编辑稿（每行一条字幕）")
+        self.text_tabs.add(original_tab, text="原始转写（保留不改）")
+        self.text_tabs.add(translation_tab, text="译文（可编辑）")
         self.textbox = ScrolledText(
-            text_wrap, wrap="word", relief="flat", bd=0, bg="#FBFCFE", fg=INK,
+            editor_tab, wrap="word", relief="flat", bd=0, bg="#FBFCFE", fg=INK,
             insertbackground=INK, font=(FONT, 10), padx=13, pady=12, spacing1=2,
             spacing3=3, undo=True
         )
         self.textbox.pack(fill="both", expand=True)
+        self.original_textbox = ScrolledText(
+            original_tab, wrap="word", relief="flat", bd=0, bg="#F6F8FB", fg=INK,
+            font=(FONT, 10), padx=13, pady=12, spacing1=2, spacing3=3
+        )
+        self.original_textbox.pack(fill="both", expand=True)
+        self.translation_textbox = ScrolledText(
+            translation_tab, wrap="word", relief="flat", bd=0, bg="#FBFCFE", fg=INK,
+            insertbackground=INK, font=(FONT, 10), padx=13, pady=12, spacing1=2,
+            spacing3=3, undo=True
+        )
+        self.translation_textbox.pack(fill="both", expand=True)
         self._show_placeholder()
+        self.original_textbox.insert("1.0", "原始识别结果会单独保留在这里。")
+        self.original_textbox.configure(state="disabled", fg="#8390A3")
+        self.translation_textbox.insert("1.0", "识别完成后，可选择目标语言并点击左侧「生成译文」。")
+        self.translation_textbox.configure(fg="#8390A3")
 
         progress_area = tk.Frame(right, bg=CARD)
         progress_area.pack(fill="x", pady=(12, 0))
@@ -418,9 +521,23 @@ class SpeechTextApp:
         self.review_btn = self._button(progress_area, "导出语言与质量校对表 CSV", self.export_review_report, kind="ghost", state="disabled")
         self.review_btn.pack(anchor="e", pady=(8, 0))
         tk.Label(
-            outer, text="识别会标出不确定区域，但无法保证零错误；尤其是方言、口音、重叠说话和背景音乐，需要对照原视频复核。",
+            outer, text="默认简单模式：自动逐段识别、基础音频清理、自动复核。方言识别与机器翻译仍可能出错；原始转写会单独保留。",
             bg=BG, fg=MUTED, font=(FONT, 9), anchor="w"
         ).pack(fill="x", pady=(12, 0))
+
+    def _on_mode_change(self, event=None):
+        """Simple mode is an actual preset; professional mode unlocks model/VAD choices."""
+        simple = self.mode_var.get() == "简单模式"
+        if simple:
+            self.model_var.set("medium（更准确）")
+            self.vad_var.set(False)
+        if hasattr(self, "model_combo"):
+            self.model_combo.configure(state="disabled" if simple or self.busy else "readonly")
+        if hasattr(self, "vad_check"):
+            self.vad_check.configure(state="disabled" if simple or self.busy else "normal")
+        if hasattr(self, "enhance_check"):
+            self.enhance_check.configure(state="disabled" if self.busy else "normal")
+        self.status_var.set("简单模式：medium 模型、自动逐段检测语种、轻度音频清理、自动复核。" if simple else "专业模式：可自行调整模型、语种、音频处理和 VAD 选项。")
 
     def _clear_prompt_placeholder(self, event=None):
         placeholder = "例如：墨西哥西班牙语口音；粤语口语；术语/人名/地名"
@@ -457,14 +574,27 @@ class SpeechTextApp:
     def _set_busy(self, busy):
         self.busy = busy
         state = "disabled" if busy else "normal"
-        self.start_btn.configure(state=state)
+        self.start_btn.configure(state="disabled" if busy or not self.video_path else "normal")
         self.pick_btn.configure(state=state)
         self.lang_combo.configure(state="disabled" if busy else "readonly")
-        self.model_combo.configure(state="disabled" if busy else "readonly")
-        self.translate_en_check.configure(state=state)
+        simple_mode = getattr(self, "mode_var", None) is not None and self.mode_var.get() == "简单模式"
+        self.model_combo.configure(state="disabled" if busy or simple_mode else "readonly")
+        if hasattr(self, "translation_target_combo"):
+            self.translation_target_combo.configure(state="disabled" if busy else "readonly")
+        if hasattr(self, "translate_btn"):
+            self.translate_btn.configure(state="disabled" if busy or not self.transcript_segments else "normal")
+        if hasattr(self, "export_original_btn"):
+            self.export_original_btn.configure(state="disabled" if busy or not self.original_segments else "normal")
+        if hasattr(self, "export_translated_srt_btn"):
+            self.export_translated_srt_btn.configure(state="disabled" if busy or not self.translation_complete else "normal")
+        if hasattr(self, "export_translated_txt_btn"):
+            self.export_translated_txt_btn.configure(state="disabled" if busy or not self.translation_complete else "normal")
+        if hasattr(self, "mode_combo"):
+            self.mode_combo.configure(state="disabled" if busy else "readonly")
         self.prompt_entry.configure(state=state)
         self.enhance_check.configure(state=state)
-        self.vad_check.configure(state=state)
+        simple_mode = getattr(self, "mode_var", None) is not None and self.mode_var.get() == "简单模式"
+        self.vad_check.configure(state="disabled" if busy or simple_mode else "normal")
         if hasattr(self, "review_btn"):
             self.review_btn.configure(state="disabled" if busy or not self.review_report_rows else "normal")
         self.mp3_btn.configure(state="disabled" if busy or not self.video_path else "normal")
@@ -494,22 +624,36 @@ class SpeechTextApp:
         self.video_path = path
         # Never leave results from a previous video attached to the newly selected file.
         self.transcript_segments = []
+        self.original_segments = []
         self.transcript_text = ""
+        self.translation_segments = []
+        self.translation_complete = False
+        self.translation_target_code = ""
+        self.translation_target_label = ""
         self.audio_duration = 0.0
         self.review_report_rows = []
         self.language_summary = ""
         self.review_btn.configure(state="disabled")
         self.textbox.configure(state="normal", fg="#8390A3")
         self._show_placeholder()
-        for button in (self.copy_btn, self.srt_btn, self.txt_btn, self.subtitle_video_btn):
+        for button in (self.copy_btn, self.srt_btn, self.txt_btn, self.subtitle_video_btn,
+                       self.translate_btn, self.export_original_btn, self.export_translated_srt_btn,
+                       self.export_translated_txt_btn):
             button.configure(state="disabled")
+        self.original_textbox.configure(state="normal")
+        self.original_textbox.delete("1.0", "end")
+        self.original_textbox.configure(state="disabled", fg="#8390A3")
+        self.translation_textbox.configure(state="normal", fg="#8390A3")
+        self.translation_textbox.delete("1.0", "end")
+        self.translation_textbox.insert("1.0", "识别完成后，可选择目标语言并点击左侧「生成译文」。")
         size = os.path.getsize(path)
         size_text = f"{size / (1024 * 1024):.1f} MB" if size >= 1024 * 1024 else f"{size / 1024:.0f} KB"
         self.file_label.configure(text=os.path.basename(path), fg=INK)
         self.file_hint.configure(text=f"{size_text}  ·  {os.path.dirname(path)}", fg=MUTED)
         self.mp3_btn.configure(state="normal")
         self.wav_btn.configure(state="normal")
-        self.status_var.set("视频已载入。建议使用 medium 模型；为避免漏掉轻声，默认不跳过静音。")
+        self.start_btn.configure(state="normal")
+        self.status_var.set("视频已载入。简单模式默认使用 medium、自动语种检测、轻度清理和自动复核。")
         self.percent_var.set("0%")
         self.progress.configure(value=0)
 
@@ -579,22 +723,38 @@ class SpeechTextApp:
         selected_language = self.lang_var.get()
         language_code = LANGUAGE_CODE_BY_LABEL.get(selected_language)
         # A None language code means identify the language anew for each audio window.
+        user_prompt = self._get_prompt_text()
+        if selected_language.startswith("粤语 / 地方汉语方言"):
+            dialect_hint = "粤语口语及地方汉语词汇。尽量保留原话，不要翻译，不确定内容可按听到的发音转写。"
+            user_prompt = (user_prompt + "；" + dialect_hint).strip("；")
         options = {
             "model": model_labels.get(self.model_var.get(), "medium"),
             "language": language_code,
             "language_label": selected_language,
-            "task": "translate" if self.translate_en_var.get() else "transcribe",
+            "task": "transcribe",
             "vad_filter": bool(self.vad_var.get()),
             "enhance_audio": bool(self.enhance_var.get()),
-            "initial_prompt": self._get_prompt_text(),
+            "initial_prompt": user_prompt,
         }
         self.last_processing_options = dict(options)
         self.transcript_segments = []
+        self.original_segments = []
         self.transcript_text = ""
+        self.translation_segments = []
+        self.translation_complete = False
         self.audio_duration = 0.0
         self.review_report_rows = []
         self.language_summary = ""
         self.review_btn.configure(state="disabled")
+        self.original_textbox.configure(state="normal")
+        self.original_textbox.delete("1.0", "end")
+        self.original_textbox.configure(state="disabled", fg="#8390A3")
+        self.translation_textbox.configure(state="normal", fg="#8390A3")
+        self.translation_textbox.delete("1.0", "end")
+        self.translation_textbox.insert("1.0", "重新识别后，请重新生成译文。")
+        self.export_original_btn.configure(state="disabled")
+        self.export_translated_srt_btn.configure(state="disabled")
+        self.export_translated_txt_btn.configure(state="disabled")
         self._set_busy(True)
         self.txt_btn.configure(state="disabled")
         self.srt_btn.configure(state="disabled")
@@ -658,8 +818,10 @@ class SpeechTextApp:
 
             # Short overlapping windows allow language identification to be revisited across the whole video,
             # rather than inheriting one language guess from the beginning of the file.
-            chunk_seconds = 30.0
-            overlap_seconds = 2.0
+            # 16-second windows with a 4-second overlap respond faster to language changes
+            # than one long language guess; more windows cost additional processing time.
+            chunk_seconds = 16.0
+            overlap_seconds = 4.0
             step_seconds = chunk_seconds - overlap_seconds
             starts = [0.0]
             while starts[-1] + chunk_seconds < duration:
@@ -813,7 +975,7 @@ class SpeechTextApp:
                 f"文件：{os.path.basename(self.video_path)}",
                 f"音频时长：{duration:.2f} 秒",
                 f"识别模型：{options['model']}",
-                f"识别模式：{'英文翻译输出（仅英文）' if options['task'] == 'translate' else '保留原语种转写'}",
+                "识别模式：保留原语种转写；翻译作为独立、可选步骤执行",
                 f"音频预处理：{'开启' if options['enhance_audio'] else '关闭'}（基础滤波，不等于复杂人声分离）",
                 f"片段语种概览：{language_summary}",
                 f"疑似需复核的文字段数：{review_count}",
@@ -845,17 +1007,33 @@ class SpeechTextApp:
             self.root.after(0, lambda data=collected, langs=getattr(self, "language_summary", ""), dur=duration, err=failure: self._finish_processing(data, langs, dur, err))
 
     def _append_segment(self, item):
-        # Called only on the UI thread; stream results so users can see whether later speech is being processed.
+        # Streaming output lets the user see whether later speech is still being processed.
+        text = str(item.get("text", "")).replace("\r", " ").replace("\n", " ").strip()
         self.textbox.configure(state="normal", fg=INK)
         current = self.textbox.get("1.0", "end-1c")
         if current.strip() == "正在准备音频……":
             self.textbox.delete("1.0", "end")
-        self.textbox.insert("end", item["text"] + "\n")
+        if self.textbox.get("1.0", "end-1c").strip():
+            self.textbox.insert("end", "\n")
+        self.textbox.insert("end", text)
         self.textbox.see("end")
+        self.original_textbox.configure(state="normal", fg=INK)
+        existing = self.original_textbox.get("1.0", "end-1c").strip()
+        if existing in ("原始识别结果会单独保留在这里。", ""):
+            self.original_textbox.delete("1.0", "end")
+        if self.original_textbox.get("1.0", "end-1c").strip():
+            self.original_textbox.insert("end", "\n")
+        self.original_textbox.insert("end", text)
+        self.original_textbox.configure(state="disabled")
+        self.original_textbox.see("end")
 
     def _finish_processing(self, segments, language_summary, duration, error):
-        self.transcript_segments = segments
-        self.transcript_text = "\n".join(item["text"] for item in segments)
+        # Preserve the first-pass result untouched, while edits operate on a separate copy.
+        self.original_segments = [dict(item) for item in segments]
+        self.transcript_segments = [dict(item) for item in segments]
+        self.transcript_text = "\n".join(str(item["text"]).replace("\r", " ").replace("\n", " ").strip() for item in self.transcript_segments)
+        self.translation_segments = []
+        self.translation_complete = False
         self.audio_duration = duration
         self.language_summary = language_summary or "未能确定语种"
         self._set_busy(False)
@@ -864,10 +1042,17 @@ class SpeechTextApp:
             self.textbox.delete("1.0", "end")
             self.textbox.insert("1.0", self.transcript_text)
             self.textbox.see("1.0")
+            self.original_textbox.configure(state="normal", fg=INK)
+            self.original_textbox.delete("1.0", "end")
+            self.original_textbox.insert("1.0", "\n".join(str(item["text"]).replace("\r", " ").replace("\n", " ").strip() for item in self.original_segments))
+            self.original_textbox.configure(state="disabled")
             self.txt_btn.configure(state="normal")
             self.srt_btn.configure(state="normal")
             self.copy_btn.configure(state="normal")
             self.subtitle_video_btn.configure(state="normal" if self.transcript_segments else "disabled")
+            self.translate_btn.configure(state="normal" if self.transcript_segments else "disabled")
+            self.export_original_btn.configure(state="normal" if self.original_segments else "disabled")
+            self.export_translated_srt_btn.configure(state="disabled")
             self.review_btn.configure(state="normal" if self.review_report_rows else "disabled")
             self.progress.configure(value=100 if not error else self.progress["value"])
             self.percent_var.set("100%" if not error else self.percent_var.get())
@@ -884,7 +1069,7 @@ class SpeechTextApp:
         low_conf = sum(1 for item in segments if item.get("review_flag"))
         last_end = float(segments[-1]["end"]) if segments else 0.0
         tail_gap = max(0.0, float(duration) - last_end)
-        task_text = "英文翻译输出" if self.translate_en_var.get() else "保留原语种转写"
+        task_text = "保留原语种转写"
         status = f"完成 · {task_text} · 语种扫描：{self.language_summary} · {len(segments)} 段 · {low_conf} 段需复核"
         if tail_gap >= max(6.0, duration * 0.08):
             status += f" · 结尾 {tail_gap:.1f}s 无文字，请试听"
@@ -930,11 +1115,77 @@ class SpeechTextApp:
         except Exception as exc:
             messagebox.showerror("导出失败", str(exc))
 
+    def _sync_editor_to_segments(self, show_warning=True):
+        """Apply edited lines to subtitle rows without corrupting timestamps. One line = one row."""
+        if not self.transcript_segments:
+            if show_warning:
+                messagebox.showinfo("暂无识别结果", "请先完成语音识别。")
+            return False
+        text = self.textbox.get("1.0", "end-1c").replace("\r", "")
+        lines = text.split("\n") if text else []
+        if len(lines) != len(self.transcript_segments):
+            if show_warning:
+                messagebox.showwarning(
+                    "字幕行数发生变化",
+                    f"当前编辑稿有 {len(lines)} 行，但时间轴有 {len(self.transcript_segments)} 条字幕。\n\n"
+                    "为避免字幕错位，导出前请恢复成每行对应一条字幕（可修改文字，但暂不支持在这里增删行）。"
+                )
+            return False
+        changed = False
+        for item, line in zip(self.transcript_segments, lines):
+            cleaned = line.strip()
+            if cleaned != str(item.get("text", "")).strip():
+                changed = True
+            item["text"] = cleaned
+        self.transcript_text = "\n".join(item["text"] for item in self.transcript_segments)
+        if changed and self.translation_complete:
+            self.translation_complete = False
+            self.export_translated_srt_btn.configure(state="disabled")
+            self.export_translated_txt_btn.configure(state="disabled")
+            self.translation_textbox.configure(state="normal", fg="#8390A3")
+            self.translation_textbox.delete("1.0", "end")
+            self.translation_textbox.insert("1.0", "原文已修改，先前译文已标记为过期。\n\n请点击「生成译文（联网）」重新翻译，以保持原文与译文一致。")
+            self.status_var.set("原文已修改：为避免原文与译文不一致，请重新生成译文。")
+        return True
+
+    def _sync_translation_to_segments(self, show_warning=True):
+        if not self.translation_complete or not self.translation_segments:
+            if show_warning:
+                messagebox.showinfo("尚无译文", "请先点击「生成译文（联网）」。")
+            return False
+        text = self.translation_textbox.get("1.0", "end-1c").replace("\r", "")
+        lines = text.split("\n") if text else []
+        if len(lines) != len(self.translation_segments):
+            if show_warning:
+                messagebox.showwarning("译文行数发生变化", "请保持每行对应一条字幕，避免时间轴错位。")
+            return False
+        for item, line in zip(self.translation_segments, lines):
+            item["text"] = line.strip()
+        return True
+
     def _ensure_transcript(self):
-        if not self.transcript_text:
+        if not self.transcript_segments:
             messagebox.showinfo("暂无识别结果", "请先完成语音识别。")
             return False
-        return True
+        return self._sync_editor_to_segments()
+
+    def export_original_txt(self):
+        if not self.original_segments:
+            messagebox.showinfo("暂无原始转写", "请先完成语音识别。")
+            return
+        base = os.path.splitext(os.path.basename(self.video_path))[0] if self.video_path else "声文识别结果"
+        path = filedialog.asksaveasfilename(
+            title="导出原始 TXT", defaultextension=".txt", initialfile=base + "_原始转写.txt",
+            filetypes=[("文本文件", "*.txt")]
+        )
+        if path:
+            try:
+                original_text = "\n".join(str(item.get("text", "")) for item in self.original_segments)
+                with open(path, "w", encoding="utf-8-sig", newline="\n") as f:
+                    f.write(original_text)
+                self._set_status(f"原始转写已导出：{path}", color=SUCCESS)
+            except Exception as exc:
+                messagebox.showerror("导出失败", str(exc))
 
     def export_txt(self):
         if not self._ensure_transcript():
@@ -961,8 +1212,7 @@ class SpeechTextApp:
         return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
     def export_srt(self):
-        if not self.transcript_segments:
-            messagebox.showinfo("暂无字幕", "请先完成语音识别。")
+        if not self._ensure_transcript():
             return
         base = os.path.splitext(os.path.basename(self.video_path))[0] if self.video_path else "声文识别结果"
         path = filedialog.asksaveasfilename(
@@ -978,6 +1228,27 @@ class SpeechTextApp:
             except Exception as exc:
                 messagebox.showerror("导出失败", str(exc))
 
+    def export_translated_srt(self):
+        if not self._ensure_transcript():
+            return
+        if not self._sync_translation_to_segments():
+            return
+        base = os.path.splitext(os.path.basename(self.video_path))[0] if self.video_path else "声文译文"
+        default = base + f"_{self.translation_target_label or '译文'}.srt"
+        path = filedialog.asksaveasfilename(
+            title="导出译文 SRT", defaultextension=".srt", initialfile=default,
+            filetypes=[("SRT 字幕", "*.srt")]
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="\n") as f:
+                for i, seg in enumerate(self.translation_segments, 1):
+                    f.write(f"{i}\n{self._srt_time(seg['start'])} --> {self._srt_time(seg['end'])}\n{seg['text']}\n\n")
+            self._set_status(f"译文 SRT 已导出：{path}", color=SUCCESS)
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc))
+
     def export_subtitled_video(self):
         """Render recognized subtitle timings directly into a new MP4 video."""
         if not self._ensure_transcript():
@@ -985,12 +1256,21 @@ class SpeechTextApp:
         if not self.video_path or not self.transcript_segments:
             messagebox.showinfo("暂无字幕", "请先选择视频并完成语音识别。")
             return
+        use_translation = bool(self.subtitle_translation_var.get() and self.translation_complete)
+        if self.subtitle_translation_var.get() and not self.translation_complete:
+            if not messagebox.askyesno("尚未生成译文", "你勾选了使用译文字幕，但目前没有可用译文。\n\n是否改为使用已编辑的原文字幕生成视频？"):
+                return
+            use_translation = False
+        if use_translation and not self._sync_translation_to_segments():
+            return
+        selected_segments = self.translation_segments if use_translation else self.transcript_segments
         base = os.path.splitext(os.path.basename(self.video_path))[0]
+        output_suffix = "_译文字幕.mp4" if use_translation else "_带字幕.mp4"
         output_path = filedialog.asksaveasfilename(
             title="生成带字幕视频（硬字幕）",
             defaultextension=".mp4",
             initialdir=os.path.dirname(self.video_path),
-            initialfile=base + "_带字幕.mp4",
+            initialfile=base + output_suffix,
             filetypes=[("MP4 视频", "*.mp4")]
         )
         if not output_path:
@@ -1000,7 +1280,7 @@ class SpeechTextApp:
             return
         # Snapshot the inputs so the worker uses exactly the result displayed to the user.
         video_path = self.video_path
-        segments = [dict(item) for item in self.transcript_segments]
+        segments = [dict(item) for item in selected_segments]
         duration = float(self.audio_duration or 0.0)
         self._set_busy(True)
         self.progress.configure(value=0)
@@ -1090,6 +1370,181 @@ class SpeechTextApp:
             if temp_dir:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             self.root.after(0, lambda: self._set_busy(False))
+
+    def export_translated_txt(self):
+        if not self._ensure_transcript():
+            return
+        if not self._sync_translation_to_segments():
+            return
+        base = os.path.splitext(os.path.basename(self.video_path))[0] if self.video_path else "声文译文"
+        path = filedialog.asksaveasfilename(
+            title="导出译文 TXT", defaultextension=".txt",
+            initialfile=base + f"_{self.translation_target_label or '译文'}.txt",
+            filetypes=[("文本文件", "*.txt")]
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="\n") as f:
+                f.write("\n".join(item.get("text", "") for item in self.translation_segments))
+            self._set_status(f"译文 TXT 已导出：{path}", color=SUCCESS)
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc))
+
+    @staticmethod
+    def _translation_lang_code(source_code):
+        source_code = str(source_code or "").strip().lower()
+        return LANGUAGE_CODE_ALIASES.get(source_code, source_code)
+
+    @staticmethod
+    def _call_mymemory(text, source_code, target_code):
+        """Translate one caption via MyMemory; sends text only, never the source media."""
+        text = str(text or "").strip()
+        if not text:
+            return ""
+        if len(text) > 450:
+            # Caption segmentation usually keeps this short; split unusually long rows to fit the provider query limit.
+            pieces = []
+            rest = text
+            while rest:
+                if len(rest) <= 450:
+                    pieces.append(rest)
+                    break
+                split_at = max(rest.rfind(" ", 0, 450), rest.rfind("。", 0, 450), rest.rfind(".", 0, 450))
+                if split_at < 200:
+                    split_at = 450
+                pieces.append(rest[:split_at].strip())
+                rest = rest[split_at:].strip()
+            translated_parts = [SpeechTextApp._call_mymemory(part, source_code, target_code) for part in pieces]
+            joiner = "" if target_code.startswith(("zh", "ja", "ko", "th")) else " "
+            return joiner.join(translated_parts)
+        params = urllib.parse.urlencode({"q": text, "langpair": f"{source_code}|{target_code}"})
+        url = "https://api.mymemory.translated.net/get?" + params
+        request = urllib.request.Request(url, headers={"User-Agent": f"Shengwen/{APP_VERSION} (desktop subtitle tool)"})
+        last_error = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(request, timeout=25) as response:
+                    payload = json.loads(response.read().decode("utf-8", errors="replace"))
+                status = int(payload.get("responseStatus", 0) or 0)
+                result = (payload.get("responseData") or {}).get("translatedText", "")
+                if status != 200 or not result:
+                    detail = payload.get("responseDetails") or f"翻译服务返回状态 {status}"
+                    raise RuntimeError(str(detail))
+                return html.unescape(str(result)).replace("\r", " ").replace("\n", " ").strip()
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError(str(last_error or "在线翻译失败"))
+
+    def start_translation(self):
+        if self.busy:
+            return
+        if not self._sync_editor_to_segments():
+            return
+        target_label = self.translation_target_var.get()
+        target_code = TARGET_CODE_BY_LABEL.get(target_label)
+        if not target_code:
+            messagebox.showwarning("请选择目标语言", "请选择译文的目标语言。")
+            return
+        needs_online = any(
+            str(item.get("text", "")).strip()
+            and self._translation_lang_code(item.get("language", "")) != target_code
+            for item in self.transcript_segments
+        )
+        if needs_online and not self.translation_privacy_accepted:
+            accepted = messagebox.askyesno(
+                "在线翻译与隐私提示",
+                "为了生成译文，声文会把识别文字（不包含视频或音频文件）发送给 MyMemory 在线翻译服务。\n\n"
+                "这会将字幕文本交给第三方处理，服务可能有可用语言、隐私政策和使用额度限制。\n\n"
+                "是否同意本次会话使用在线翻译？"
+            )
+            if not accepted:
+                return
+            self.translation_privacy_accepted = True
+        source_segments = [dict(item) for item in self.transcript_segments]
+        if not source_segments:
+            messagebox.showinfo("暂无原文", "请先完成语音识别。")
+            return
+        self.translation_target_code = target_code
+        self.translation_target_label = target_label
+        self._set_busy(True)
+        self._set_status(f"正在逐条翻译为{target_label}；原文与时间轴会保留……", 0)
+        self.translation_textbox.configure(state="normal", fg=INK)
+        self.translation_textbox.delete("1.0", "end")
+        self.translation_textbox.insert("1.0", "正在翻译，请稍候……")
+        threading.Thread(
+            target=self._translation_worker,
+            args=(source_segments, target_code, target_label),
+            daemon=True
+        ).start()
+
+    def _translation_worker(self, source_segments, target_code, target_label):
+        translated = []
+        failure = None
+        try:
+            total = max(1, len(source_segments))
+            for idx, seg in enumerate(source_segments):
+                source_text = str(seg.get("text", "")).strip()
+                source_code = self._translation_lang_code(seg.get("language", ""))
+                if not source_text:
+                    translated_text = ""
+                elif not source_code or source_code == "unknown":
+                    raise RuntimeError(
+                        f"第 {idx + 1} 条字幕（约 {format_time(seg.get('start', 0))}）没有可靠的语种代码。\n"
+                        "请在专业模式中指定该段主要语言后重新识别；为避免错误翻译，程序没有猜测源语言。"
+                    )
+                elif source_code == target_code or (source_code == "zh" and target_code == "zh-CN"):
+                    translated_text = source_text
+                else:
+                    try:
+                        translated_text = self._call_mymemory(source_text, source_code, target_code)
+                    except Exception as exc:
+                        lang_name = LANGUAGE_NAME_BY_CODE.get(seg.get("language", ""), source_code)
+                        raise RuntimeError(
+                            f"第 {idx + 1}/{total} 条字幕翻译失败（源语言：{lang_name}，目标语言：{target_label}）。\n"
+                            f"服务可能不支持该语言组合、网络中断或达到使用限制。\n\n详细信息：{exc}"
+                        ) from exc
+                    time.sleep(0.18)  # keep calls gentle to the public translation endpoint
+                translated.append({**seg, "text": translated_text, "source_text": source_text})
+                pct = 100 * (idx + 1) / total
+                self._set_status(f"正在翻译为{target_label} · {idx + 1}/{total} 条字幕", pct)
+            self._set_status(f"译文已生成：{target_label}。译文可修改后导出；专有词和方言仍需复核。", 100, SUCCESS)
+        except Exception as exc:
+            failure = str(exc)
+        self.root.after(0, lambda result=translated, err=failure, label=target_label, code=target_code: self._finish_translation(result, err, label, code))
+
+    def _finish_translation(self, translated, error, target_label, target_code):
+        self._set_busy(False)
+        if error:
+            self.translation_complete = False
+            self.translation_segments = []
+            self.translation_textbox.configure(state="normal", fg=DANGER)
+            self.translation_textbox.delete("1.0", "end")
+            self.translation_textbox.insert("1.0", "译文未完成。\n\n" + error + "\n\n原始识别和编辑稿未改变。")
+            self.export_translated_srt_btn.configure(state="disabled")
+            self._set_status("在线翻译未完成；原文保留不变。", color=DANGER)
+            messagebox.showerror("翻译失败", error)
+            return
+        self.translation_segments = translated
+        self.translation_complete = True
+        self.translation_target_code = target_code
+        self.translation_target_label = target_label
+        self.translation_textbox.configure(state="normal", fg=INK)
+        self.translation_textbox.delete("1.0", "end")
+        self.translation_textbox.insert("1.0", "\n".join(item.get("text", "") for item in translated))
+        self.translation_textbox.see("1.0")
+        self.text_tabs.select(2)
+        self.export_translated_srt_btn.configure(state="normal")
+        self.export_translated_txt_btn.configure(state="normal")
+        self._set_status(f"翻译完成 · {target_label} · {len(translated)} 条。请校对专有词、方言和语义后再导出。", 100, SUCCESS)
+        messagebox.showinfo(
+            "译文已生成",
+            f"已生成 {target_label} 译文并保留每条字幕的时间轴。\n\n"
+            "请在“译文”页校对后，可导出译文 SRT，或勾选“生成视频时使用译文字幕”生成带字幕视频。\n"
+            "自动翻译可能误解上下文、专有词和方言，不代表已完成人工校验。"
+        )
 
     def copy_text(self):
         if not self._ensure_transcript():
